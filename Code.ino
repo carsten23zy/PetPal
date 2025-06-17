@@ -1,8 +1,8 @@
 #include <Arduino.h>
 #include <TM1637Display.h>
+
 #define CLK 12
 #define DIO 13
-#define DISPLAY_DELAY 2000 // delay in miliseconds
 
 #define MIN_WASH_MS 30000UL
 #define MAX_WASH_MS 120000UL
@@ -10,43 +10,38 @@
 #define MOTOR_L 22
 #define MOTOR_R 23
 
-#define PUMP_A 18
-#define PUMP_B 19
+#define PUMP_A 19
+#define PUMP_B 21
 
 #define POT_PIN 32 
 
-volatile long washTime = 0;
-bool IRActivation = true;
+bool IRactivated = false;
+bool startButtonPressed = false;
+bool IRenabled = false;
+bool irToggled = false;
 
 const uint8_t SEG_DONE[] = {
- SEG_B | SEG_C | SEG_D | SEG_E | SEG_G, // d
- SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
- SEG_C | SEG_E | SEG_G, // n
- SEG_A | SEG_D | SEG_E | SEG_F | SEG_G }; // E
+    SEG_B | SEG_C | SEG_D | SEG_E | SEG_G,         // d
+    SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F, // O
+    SEG_C | SEG_E | SEG_G,                         // n
+    SEG_A | SEG_D | SEG_E | SEG_F | SEG_G          // E
+};
 
 TM1637Display display(CLK, DIO);
 
-uint8_t blank[] = {0x00, 0x00, 0x00, 0x00};
-
-struct Sensor {
-	const uint8_t PIN;
-	bool activated;
-};
-
-Sensor IR = {4, false};
-Sensor sButton = {34, false};
-
-void IRAM_ATTR isr_IR() {
-	IR.activated = true;
+void IRAM_ATTR onIR() {
+  IRactivated = true;
 }
-
-void IRAM_ATTR isr_sButton() {
-	sButton.activated = true;
+void IRAM_ATTR onStartButton() {
+  startButtonPressed = true;
+}
+void IRAM_ATTR onToggleIR() {
+  IRenabled = !IRenabled;
+  irToggled = true;
 }
 
 void setup() {
   Serial.begin(115200);
-  Serial.println("Serial Working");
   display.setBrightness(0x0f);
 
   pinMode(MOTOR_L, OUTPUT);
@@ -54,85 +49,95 @@ void setup() {
   pinMode(PUMP_A, OUTPUT);
   pinMode(PUMP_B, OUTPUT);
 
-  pinMode(IR.PIN, INPUT);
-  pinMode(sButton.PIN, INPUT);
+  pinMode(33, INPUT);  attachInterrupt(digitalPinToInterrupt(4),  onIR,          FALLING);
+  pinMode(34, INPUT); attachInterrupt(digitalPinToInterrupt(34), onStartButton, RISING);
+  pinMode(35, INPUT); attachInterrupt(digitalPinToInterrupt(35), onToggleIR,    RISING);
 
-  pinMode(POT_PIN, INPUT);
-  analogSetWidth(12);  
-
+  analogSetWidth(12);
   analogSetPinAttenuation(POT_PIN, ADC_11db);
-  attachInterrupt(digitalPinToInterrupt(IR.PIN), isr_IR, FALLING);
-  attachInterrupt(digitalPinToInterrupt(sButton.PIN), isr_sButton, RISING);
+  pinMode(POT_PIN, INPUT);
 }
 
-void startWash(long duration) {
-  // turn on motor and pump
+void startWash(long durationMs, int prog) {
+  int motorPWM = map(prog, 1, 9, 50, 180);
+
+  // turn on motor & pump
   analogWrite(MOTOR_L, 0);
-  analogWrite(MOTOR_R, 180);
+  analogWrite(MOTOR_R, motorPWM);
   analogWrite(PUMP_A, 0);
   analogWrite(PUMP_B, 230);
-  Serial.println("motor on");
+  Serial.println("Wash started");
 
-  delay(duration);
-  // turn off motor and pump
+  unsigned long start = millis(), now;
+  while ((now = millis()) - start < (unsigned long)durationMs) {
+    unsigned long remaining = durationMs - (now - start);
+    // convert to whole seconds
+    long remSec = (remaining + 500) / 1000;
+    int m = remSec / 60;
+    int s = remSec % 60;
+    int dispVal = m * 100 + s; 
+    // show MM:SS
+    display.showNumberDecEx(dispVal, 0x80 >> 1, true, 4, 0);
+    delay(200);
+  }
+
+  // turn off
   analogWrite(MOTOR_R, 0);
   analogWrite(PUMP_B, 0);
-  Serial.println("motor off");
-  // reset button and ir sensor
-  IR.activated = sButton.activated = false;
+  Serial.println("Wash complete");
 
-  // display "done"
+  // clear triggers
+  IRactivated = startButtonPressed = false;
+
+  // DONE message
   display.setSegments(SEG_DONE);
-  delay(5000);
+  delay(3000);
+  display.clear();
 }
 
 void loop() {
-  int potVal = analogRead(POT_PIN);  
-  washTime = map(potVal, 0, 4095, MIN_WASH_MS, MAX_WASH_MS);
-  
-  long seconds = (washTime + 500) / 1000;
-  int minutes = seconds / 60;
-  int secs    = seconds % 60;
-  int dispVal = minutes * 100 + secs;
-  display.showNumberDecEx(dispVal, 0x80 >> 1, true, 4, 0);
+  int pot = analogRead(POT_PIN);
+  int prog = map(pot, 0, 4095, 1, 9);
 
-  if ((IR.activated && IRActivation) || sButton.activated) {
-    startWash(washTime);
+  if (irToggled) {
+  irToggled = false; // reset flag
+
+  if (IRenabled) {
+    // Show "IrOn"
+    uint8_t irOn[4] = {
+      SEG_E | SEG_F,                                  // I
+      SEG_E | SEG_G,                                  // r
+      SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,  // O
+      SEG_C | SEG_E | SEG_G                           // n
+    };
+    display.setSegments(irOn);
+  } else {
+    // Show "IrOF"
+    uint8_t irOf[4] = {
+      SEG_E | SEG_F,                                  // I
+      SEG_E | SEG_G,                                  // r
+      SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,  // O
+      SEG_A | SEG_E | SEG_F | SEG_G                   // F
+    };
+    display.setSegments(irOf);
   }
 
-  delay(10);
+  delay(1000);
+  }
+
+  // build "P‑‑n" segments
+  uint8_t segs[4];
+  segs[0] = SEG_A | SEG_B | SEG_E | SEG_F | SEG_G; // 'P'
+  segs[1] = SEG_G;                                // '-'
+  segs[2] = SEG_G;                                // '-'
+  segs[3] = display.encodeDigit(prog);            // '1'..'9'
+  display.setSegments(segs);
+
+  // trigger
+  if ((IRactivated && IRenabled) || startButtonPressed) {
+    long washDur = map(prog, 1, 9, MIN_WASH_MS, MAX_WASH_MS);
+    startWash(washDur, prog);
+  }
+
+  delay(50);
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
