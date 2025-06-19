@@ -15,10 +15,14 @@
 
 #define POT_PIN 32 
 
-bool IRactivated = false;
 bool startButtonPressed = false;
+
 bool IRenabled = false;
 bool irToggled = false;
+bool IRactivated = false;
+bool irToggleRequested = false;
+
+unsigned long lastToggleTime = 0;
 
 const uint8_t SEG_DONE[] = {
     SEG_B | SEG_C | SEG_D | SEG_E | SEG_G,         // d
@@ -36,8 +40,7 @@ void IRAM_ATTR onStartButton() {
   startButtonPressed = true;
 }
 void IRAM_ATTR onToggleIR() {
-  IRenabled = !IRenabled;
-  irToggled = true;
+  irToggleRequested = true;
 }
 
 void setup() {
@@ -49,7 +52,7 @@ void setup() {
   pinMode(PUMP_A, OUTPUT);
   pinMode(PUMP_B, OUTPUT);
 
-  pinMode(33, INPUT);  attachInterrupt(digitalPinToInterrupt(4),  onIR,          FALLING);
+  pinMode(33, INPUT); attachInterrupt(digitalPinToInterrupt(33),  onIR,         FALLING);
   pinMode(34, INPUT); attachInterrupt(digitalPinToInterrupt(34), onStartButton, RISING);
   pinMode(35, INPUT); attachInterrupt(digitalPinToInterrupt(35), onToggleIR,    RISING);
 
@@ -59,7 +62,7 @@ void setup() {
 }
 
 void startWash(long durationMs, int prog) {
-  int motorPWM = map(prog, 1, 9, 50, 180);
+  int motorPWM = map(prog, 1, 9, 90, 180);
 
   // turn on motor & pump
   analogWrite(MOTOR_L, 0);
@@ -99,30 +102,45 @@ void loop() {
   int pot = analogRead(POT_PIN);
   int prog = map(pot, 0, 4095, 1, 9);
 
-  if (irToggled) {
-  irToggled = false; // reset flag
+  if (irToggleRequested) {
+    irToggleRequested = false;
 
-  if (IRenabled) {
-    // Show "IrOn"
-    uint8_t irOn[4] = {
-      SEG_E | SEG_F,                                  // I
-      SEG_E | SEG_G,                                  // r
-      SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,  // O
-      SEG_C | SEG_E | SEG_G                           // n
-    };
-    display.setSegments(irOn);
-  } else {
-    // Show "IrOF"
-    uint8_t irOf[4] = {
-      SEG_E | SEG_F,                                  // I
-      SEG_E | SEG_G,                                  // r
-      SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,  // O
-      SEG_A | SEG_E | SEG_F | SEG_G                   // F
-    };
-    display.setSegments(irOf);
+    unsigned long now = millis();
+    if (now - lastToggleTime > 2000) {
+      IRenabled = !IRenabled;
+      irToggled = true;
+      IRactivated = false;
+      lastToggleTime = now;
+    }
   }
 
-  delay(1000);
+  if (irToggled) {
+    irToggled = false;
+    IRactivated = false; 
+
+    if (IRenabled) {
+      // Show "IrOn"
+      uint8_t irOn[4] = {
+        SEG_E | SEG_F,                                  // I
+        SEG_E | SEG_G,                                  // r
+        SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,  // O
+        SEG_C | SEG_E | SEG_G                           // n
+      };
+      display.clear();
+      display.setSegments(irOn);
+    } else {
+      // Show "IrOF"
+      uint8_t irOf[4] = {
+        SEG_E | SEG_F,                                  // I
+        SEG_E | SEG_G,                                  // r
+        SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F,  // O
+        SEG_A | SEG_E | SEG_F | SEG_G                   // F
+      };
+      display.clear();
+      display.setSegments(irOf);
+    }
+
+    delay(1000);
   }
 
   // build "P‑‑n" segments
